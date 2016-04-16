@@ -7,7 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
-    "sync"
+	"sync"
 )
 
 // Link is a handle to a live SSH link
@@ -23,10 +23,10 @@ type Tun struct {
 	LocalHost             string
 	Closed                chan struct{}
 	Control               chan string
-    
-    mu sync.Mutex
-    lst net.Listener
-    killers []chan<- struct{}
+
+	mu      sync.Mutex
+	lst     net.Listener
+	killers []chan<- struct{}
 }
 
 // SSHConnectError is self explanatory.
@@ -101,8 +101,8 @@ func (l *Link) TunnelIn(rport uint16, hostlocal string, lport uint16) (*Tun, err
 	// Set up channels, start handler goroutine
 	tunnel.Closed = make(chan struct{})
 	tunnel.Control = make(chan string, 10)
-    tunnel.lst = nl
-    go tunnel.run()
+	tunnel.lst = nl
+	go tunnel.run()
 
 	return tunnel, nil
 }
@@ -114,109 +114,109 @@ type acceptPair struct {
 
 // run is used internally to handle the net.Listener for our tunnel
 func (tc *Tun) run() {
-    // Wait for incoming connection from remote SSH host
-    ts := true
-    for {
-        var chanacc chan acceptPair
-        if ts {
-            chanacc = make(chan acceptPair)
-            go func(c chan<- acceptPair, listener net.Listener) {
-                incon, err := listener.Accept()
-                s := acceptPair{conn: incon, err: err}
-                c <- s
-                close(c)
-                return
-            }(chanacc, tc.lst)
-        }
-        ts = false
-        
-        select {
-        case i := <-chanacc:
-            if i.err != nil {
-                // Tear down the tunnel; something's wrong
-                tc.killAll()
-                return
-            }
-            go tc.spawn(i.conn)
-            ts = true
-        case ctrl := <-tc.Control:
-            switch ctrl {
-            case "close": // Tear down tunnel entirely
-                tc.killAll()
-                return
-            } // switch ctrl string val
-        } // select waiting for something interesting (inbound conn or ctrlchan msg)                
-    } // main loop
+	// Wait for incoming connection from remote SSH host
+	ts := true
+	for {
+		var chanacc chan acceptPair
+		if ts {
+			chanacc = make(chan acceptPair)
+			go func(c chan<- acceptPair, listener net.Listener) {
+				incon, err := listener.Accept()
+				s := acceptPair{conn: incon, err: err}
+				c <- s
+				close(c)
+				return
+			}(chanacc, tc.lst)
+		}
+		ts = false
+
+		select {
+		case i := <-chanacc:
+			if i.err != nil {
+				// Tear down the tunnel; something's wrong
+				tc.killAll()
+				return
+			}
+			go tc.spawn(i.conn)
+			ts = true
+		case ctrl := <-tc.Control:
+			switch ctrl {
+			case "close": // Tear down tunnel entirely
+				tc.killAll()
+				return
+			} // switch ctrl string val
+		} // select waiting for something interesting (inbound conn or ctrlchan msg)
+	} // main loop
 }
 
 // killAll sends a close notification to all sub-goroutines handling ongoing connections
 func (tc *Tun) killAll() {
-    tc.mu.Lock()
-    defer tc.mu.Unlock()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
-    for _, ic := range tc.killers {
-        close(ic) // Notify tunnel connection handler goroutine to die
-    }
-    close(tc.Closed)
+	for _, ic := range tc.killers {
+		close(ic) // Notify tunnel connection handler goroutine to die
+	}
+	close(tc.Closed)
 }
 
 // spawn is used internally to handle a new connection over this tunnel
 func (tc *Tun) spawn(incon net.Conn) {
-    // Create close notification channel and add to group
-    tc.mu.Lock()
-    cn := make(chan struct{}) // NOTE: These will leak as tunnels stay up indefinitely servicing various connections
-    tc.killers = append(tc.killers, cn)
-    tc.mu.Unlock()
-    
-    log.Printf("Spawn conn: Issuing net.Dial(tcp, %s)\n", tc.LocalHost+":"+strconv.FormatUint(uint64(tc.LocalPort), 10))
-    outcon, err := net.Dial("tcp", tc.LocalHost+":"+strconv.FormatUint(uint64(tc.LocalPort), 10))
-    if err != nil {
-        log.Println("net.Dial failed")
-        // Tear down remote-SSH tunnel connection so they see something's wrong, then exit.
-        incon.Close()
-        return
-    }
-    // Construct goroutines to alert for incoming data or connection closures
-    inconData := make(chan []byte, 10)
-    inconResponse := make(chan struct{}) // flow control
-    inconClosed := make(chan struct{})
-    
-    outconData := make(chan []byte, 10)
-    outconResponse := make(chan struct{}) // flow control
-    outconClosed := make(chan struct{})
-    
-    go connreader(incon, inconData, inconResponse, inconClosed)
-    go connreader(outcon, outconData, outconResponse, outconClosed)
-    
-    connup := true
-    for connup {
-        select {
-        case <-inconClosed:
-            outcon.Close()
-            connup = false
-        case <-outconClosed:
-            incon.Close()
-            connup = false
-        case b := <-inconData:
-            _, err := outcon.Write(b)
-            inconResponse <- struct{}{} // signal ready for more data
-            if err != nil { // Connection down, close it out
-                incon.Close() // we must signal inconResponse before this or else we leak goroutines from connreader waiting on the response chan
-                connup = false
-            }
-        case b := <-outconData:
-            _, err := incon.Write(b)
-            outconResponse <- struct{}{} // signal ready for more data
-            if err != nil { // Connection down, close it out
-                outcon.Close()
-                connup = false
-            }
-        case <-cn: // Signal to tear down tunnel connections and die
-            incon.Close()
-            outcon.Close()
-            return
-        } // main select
-    } // while connup
+	// Create close notification channel and add to group
+	tc.mu.Lock()
+	cn := make(chan struct{}) // NOTE: These will leak as tunnels stay up indefinitely servicing various connections
+	tc.killers = append(tc.killers, cn)
+	tc.mu.Unlock()
+
+	log.Printf("Spawn conn: Issuing net.Dial(tcp, %s)\n", tc.LocalHost+":"+strconv.FormatUint(uint64(tc.LocalPort), 10))
+	outcon, err := net.Dial("tcp", tc.LocalHost+":"+strconv.FormatUint(uint64(tc.LocalPort), 10))
+	if err != nil {
+		log.Println("net.Dial failed")
+		// Tear down remote-SSH tunnel connection so they see something's wrong, then exit.
+		incon.Close()
+		return
+	}
+	// Construct goroutines to alert for incoming data or connection closures
+	inconData := make(chan []byte, 10)
+	inconResponse := make(chan struct{}) // flow control
+	inconClosed := make(chan struct{})
+
+	outconData := make(chan []byte, 10)
+	outconResponse := make(chan struct{}) // flow control
+	outconClosed := make(chan struct{})
+
+	go connreader(incon, inconData, inconResponse, inconClosed)
+	go connreader(outcon, outconData, outconResponse, outconClosed)
+
+	connup := true
+	for connup {
+		select {
+		case <-inconClosed:
+			outcon.Close()
+			connup = false
+		case <-outconClosed:
+			incon.Close()
+			connup = false
+		case b := <-inconData:
+			_, err := outcon.Write(b)
+			inconResponse <- struct{}{} // signal ready for more data
+			if err != nil {             // Connection down, close it out
+				incon.Close() // we must signal inconResponse before this or else we leak goroutines from connreader waiting on the response chan
+				connup = false
+			}
+		case b := <-outconData:
+			_, err := incon.Write(b)
+			outconResponse <- struct{}{} // signal ready for more data
+			if err != nil {              // Connection down, close it out
+				outcon.Close()
+				connup = false
+			}
+		case <-cn: // Signal to tear down tunnel connections and die
+			incon.Close()
+			outcon.Close()
+			return
+		} // main select
+	} // while connup
 }
 
 // BufferSize is the max size used for individual I/O transfers across live tunnel links

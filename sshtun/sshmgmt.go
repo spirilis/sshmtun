@@ -188,6 +188,7 @@ func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 			sshhost := tb.Sshcon.SSHHost
 			sshuser := tb.Sshcon.SSHUser
 			sshpass := tb.Sshcon.SSHPassword
+			// I've seen this hang before; perhaps extract this out to another timer-protected goroutine?
 			link, err := NewLink(sshhost, sshuser, sshpass)
 			if err == nil {
 				tb.mu.Unlock() // because ReattachTunnels does a Lock/Unlock too
