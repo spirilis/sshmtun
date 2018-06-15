@@ -188,7 +188,7 @@ func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 				if intvl = int(tb.ReconTimeoutInterval) / SSHMgmtDefaultMonitorInterval; intvl < 1 {
 					intvl = 2
 				}
-				if isReconRetry && reconTimeout > tb.ReconRetryInterval {
+				if isReconRetry && reconTimeout > int(tb.ReconRetryInterval)/SSHMgmtDefaultMonitorInterval {
 					fmt.Println("Attempting reconnect again-")
 					isReconRetry = false
 					reconComplete = make(chan struct{}) // reconComplete was lost by hung goroutine, create anew

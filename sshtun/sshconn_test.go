@@ -22,7 +22,7 @@ func TestSshConnection(t *testing.T) {
 	}
 	defer l.Close()
 
-	fmt.Printf("Link struct value: %q\n", l)
+	fmt.Printf("Link struct value: %v\n", l)
 }
 
 func TestSshTunnel(t *testing.T) {
