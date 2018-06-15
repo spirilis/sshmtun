@@ -10,12 +10,16 @@ import (
 
 // SSHMgmtDefaultMonitorInterval is a constant used for the automatic SSH link reconnect feature (*TunnelBroker.MonitorLink())
 const SSHMgmtDefaultMonitorInterval = 15
+const defaultReconTimeoutInterval = 120
+const defaultReconRetryAgainInterval = 600
 
 // TunnelBroker is a registry of Tun's managed by another program or library
 type TunnelBroker struct {
-	Sshcon  *Link
-	mu      sync.Mutex
-	Tunnels []*Tun
+	Sshcon               *Link
+	mu                   sync.Mutex
+	Tunnels              []*Tun
+	ReconTimeoutInterval uint
+	ReconRetryInterval   uint
 }
 
 // TunnelError is an error type specific to this sshtun package
@@ -41,6 +45,8 @@ func NewTunnelBroker(l *Link) *TunnelBroker {
 	}
 	t := new(TunnelBroker)
 	t.Sshcon = l
+	t.ReconTimeoutInterval = defaultReconTimeoutInterval
+	t.ReconRetryInterval = defaultReconRetryAgainInterval
 	return t
 }
 
@@ -154,6 +160,9 @@ func (tb *TunnelBroker) MonitorLink() (chan<- string, error) {
 func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 	tck := time.NewTicker(time.Second * SSHMgmtDefaultMonitorInterval)
 	recon := make(chan struct{}, 2) // buffered (2) to prevent locking of the goroutine when writing to the chan
+	var isRecon, isReconRetry bool
+	var reconTimeout int
+	reconComplete := make(chan struct{})
 
 	for {
 		select {
@@ -173,6 +182,27 @@ func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 				tb.mu.Unlock()
 			}
 		case <-tck.C:
+			if isRecon {
+				reconTimeout++
+				var intvl int
+				if intvl = int(tb.ReconTimeoutInterval) / SSHMgmtDefaultMonitorInterval; intvl < 1 {
+					intvl = 2
+				}
+				if isReconRetry && reconTimeout > tb.ReconRetryInterval {
+					fmt.Println("Attempting reconnect again-")
+					isReconRetry = false
+					reconComplete = make(chan struct{}) // reconComplete was lost by hung goroutine, create anew
+					recon <- struct{}{}
+				}
+				if reconTimeout > intvl {
+					// It's hanging indefinitely; ignore it and try again after the refractory timeout
+					if !isReconRetry {
+						fmt.Printf("Timed out reconnecting, waiting refractory period (%d sec) before retrying-\n", tb.ReconRetryInterval)
+					}
+					isReconRetry = true
+				}
+				break
+			}
 			tb.mu.Lock()
 			err := tb.Sshcon.Check()
 			tb.mu.Unlock()
@@ -184,19 +214,33 @@ func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 			// not 100% sure why I chose to use a signaling channel within the same goroutine to trigger reconnect... but it works ;)
 		case <-recon:
 			fmt.Println("Issuing reconnect")
-			tb.mu.Lock()
-			sshhost := tb.Sshcon.SSHHost
-			sshuser := tb.Sshcon.SSHUser
-			sshpass := tb.Sshcon.SSHPassword
-			// I've seen this hang before; perhaps extract this out to another timer-protected goroutine?
-			link, err := NewLink(sshhost, sshuser, sshpass)
-			if err == nil {
-				tb.mu.Unlock() // because ReattachTunnels does a Lock/Unlock too
-				tb.ReattachTunnels(link)
-				tb.mu.Lock()
-				tb.Sshcon = link // this will break the link to the old "Sshcon" *Link and propose GC
-			}
-			tb.mu.Unlock()
+			// NewLink can hang, so we broke this out into a goroutine
+			isRecon = true
+			isReconRetry = false
+			reconTimeout = 0
+			go tb.doReconnect(reconComplete)
+		case <-reconComplete:
+			isRecon = false
+			isReconRetry = false
+			reconTimeout = 0
+			reconComplete = make(chan struct{}) // reconComplete was consumed, so we create a new one
 		}
 	}
+}
+
+func (tb *TunnelBroker) doReconnect(alertChan chan struct{}) {
+	tb.mu.Lock()
+	sshhost := tb.Sshcon.SSHHost
+	sshuser := tb.Sshcon.SSHUser
+	sshpass := tb.Sshcon.SSHPassword
+	tb.mu.Unlock()
+
+	link, err := NewLink(sshhost, sshuser, sshpass)
+	if err == nil {
+		tb.ReattachTunnels(link)
+		tb.mu.Lock()
+		tb.Sshcon = link
+		tb.mu.Unlock()
+	}
+	close(alertChan)
 }
