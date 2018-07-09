@@ -220,6 +220,7 @@ func (tb *TunnelBroker) doMonitor(ctrl <-chan string) {
 			reconTimeout = 0
 			go tb.doReconnect(reconComplete)
 		case <-reconComplete:
+			fmt.Println("reconComplete signaled")
 			isRecon = false
 			isReconRetry = false
 			reconTimeout = 0
@@ -241,6 +242,9 @@ func (tb *TunnelBroker) doReconnect(alertChan chan struct{}) {
 		tb.mu.Lock()
 		tb.Sshcon = link
 		tb.mu.Unlock()
+		fmt.Println("doReconnect completed")
+	} else {
+		fmt.Printf("doReconnect errored with %v\n", err)
 	}
 	close(alertChan)
 }
